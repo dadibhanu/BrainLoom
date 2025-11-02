@@ -2,6 +2,6 @@
   "dev": "vite",
   "build": "vite build",
   "preview": "vite preview",
-  "start": "vite preview --host 0.0.0.0 --port 3000"
+  "start": "npm start"
 }
 ,"dependencies":{"@vitejs/plugin-react":"^5.1.0","react":"^18.3.1","react-beautiful-dnd":"^13.1.1","react-dom":"^18.3.1","react-router-dom":"^6.30.1","styled-components":"^6.1.12"},"devDependencies":{"vite":"^5.4.8"}}
