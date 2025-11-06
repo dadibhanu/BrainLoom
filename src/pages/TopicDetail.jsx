@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useLocation  } from "react-router-dom";
 import styled from "styled-components";
 import { DragDropContext, Droppable, Draggable } from "react-beautiful-dnd";
 import { getAuth } from "../lib/auth";
 
 export default function TopicDetail() {
-  const { slug } = useParams();
   const navigate = useNavigate();
-
+  const location = useLocation();
+const slug = location.pathname
+  .replace(/^\/topic\//, "") // remove "/topic/"
+  .replace(/\/add-content$/, "");
   const [topic, setTopic] = useState(null);
   const [children, setChildren] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -25,7 +27,7 @@ export default function TopicDetail() {
   // ✅ Fetch topic + children
   useEffect(() => {
     if (!slug) return;
-
+    
     const controller = new AbortController();
 
     fetch(`http://31.97.202.194/api/topics/slug/${slug}/`, {
@@ -36,10 +38,14 @@ export default function TopicDetail() {
         return res.json();
       })
       .then((data) => {
-        setTopic(data.topic);
-        setChildren(data.children || []);
-        setError("");
-      })
+  const fullTopic = {
+    ...data.topic,
+    blocks: data.blocks || []
+  };
+  setTopic(fullTopic);
+  setChildren(data.children || []);
+  setError("");
+})
       .catch((err) => {
         if (err.name !== "AbortError") setError(err.message);
       })
@@ -72,7 +78,7 @@ export default function TopicDetail() {
       });
       if (!res.ok) throw new Error(`API error ${res.status}`);
       alert("✅ Subtopic added successfully!");
-      window.location.reload();
+navigate(`/topic/${topic.full_path}/${subSlug}`);
     } catch (err) {
       alert(`❌ Failed to add subtopic: ${err.message}`);
     }
@@ -105,67 +111,81 @@ export default function TopicDetail() {
   }
 
   // ✅ Drag & Drop Reorder
-  function handleDragEnd(result) {
-    if (!result.destination) return;
-    const newOrder = Array.from(children);
-    const [moved] = newOrder.splice(result.source.index, 1);
-    newOrder.splice(result.destination.index, 0, moved);
-    setChildren(newOrder);
-    setOrderChanged(true);
+async function handleDragEnd(result) {
+  if (!result.destination) return;
+
+  const newOrder = Array.from(children);
+  const [moved] = newOrder.splice(result.source.index, 1);
+  newOrder.splice(result.destination.index, 0, moved);
+
+  const reordered = newOrder.map((item, index) => ({
+    ...item,
+    order_no: index,
+  }));
+
+  setChildren(reordered);
+  setOrderChanged(true);
+}
+
+
+
+async function saveNewOrder() {
+  if (!topic?.id) {
+    alert("Parent topic ID is missing — reload and try again.");
+    return;
   }
 
-  async function saveNewOrder() {
-    try {
-      const updated = children.map((child, index) => ({
-        ...child,
-        order_no: index,
-      }));
+  const payload = children.map((c, i) => ({
+    id: c.id,
+    order_no: i,
+  }));
 
-      await Promise.all(
-        updated.map((child) =>
-          fetch("http://31.97.202.194/api/topics/add", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${auth?.token}`,
-            },
-            body: JSON.stringify({
-              parent_id: topic.id,
-              title: child.title,
-              slug: child.slug,
-              description: child.description,
-              order_no: child.order_no,
-            }),
-          })
-        )
-      );
+  try {
+    const res = await fetch(
+      `http://31.97.202.194/api/topics/${topic.id}/reorder`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${auth?.token}`,
+        },
+        body: JSON.stringify(payload),
+      }
+    );
 
-      alert("✅ Order updated successfully!");
-      setOrderChanged(false);
-    } catch (err) {
-      alert(`❌ Failed to update order: ${err.message}`);
-    }
+    if (!res.ok) throw new Error(`Reorder failed (${res.status})`);
+
+    const data = await res.json();
+    console.log("✅ Reorder applied:", data);
+    alert("✅ Order updated successfully!");
+    setOrderChanged(false);
+  } catch (err) {
+    console.error("❌ Reorder failed:", err);
+    alert(`❌ Failed to reorder: ${err.message}`);
   }
+}
+
+
 
   // ✅ Breadcrumb Builder
   const renderBreadcrumbs = () => {
-    if (!topic?.full_path) return null;
-    const parts = topic.full_path.split("/");
-    return (
-      <Breadcrumb>
-        <Link to="/">🏠 Home</Link>
-        {parts.map((part, i) => {
-          const subPath = parts.slice(0, i + 1).join("/");
-          return (
-            <span key={i}>
-              {" / "}
-              <Link to={`/topic/${subPath}`}>{part}</Link>
-            </span>
-          );
-        })}
-      </Breadcrumb>
-    );
-  };
+  const parts = slug.split("/");
+  return (
+    <Breadcrumb>
+      <Link to="/">🏠 Home</Link>
+      {parts.map((part, i) => {
+        const subPath = parts.slice(0, i + 1).join("/");
+        return (
+          <span key={i}>
+            {" / "}
+            <Link to={`/topic/${subPath}`}>{part}</Link>
+          </span>
+        );
+      })}
+    </Breadcrumb>
+  );
+};
+
 
   // ✅ Loading / Error
   if (loading)
@@ -196,22 +216,28 @@ export default function TopicDetail() {
   {/* ✅ Only Admin can reorder (Drag & Drop) */}
   {isAdmin ? (
     <DragDropContext onDragEnd={handleDragEnd}>
-      <Droppable droppableId="subtopics">
-        {(provided) => (
-          <NavList ref={provided.innerRef} {...provided.droppableProps}>
+     <Droppable droppableId="subtopics">
+  {(provided, snapshot) => (
+    <NavList
+      ref={provided.innerRef}
+      {...provided.droppableProps}
+      $isDraggingOver={snapshot.isDraggingOver}
+    >
             {children.map((c, index) => (
               <Draggable
                 key={c.id.toString()}
                 draggableId={c.id.toString()}
                 index={index}
               >
-                {(prov) => (
-                  <NavItem
-                    ref={prov.innerRef}
-                    {...prov.draggableProps}
-                    {...prov.dragHandleProps}
-                    to={`/topic/${c.full_path}`}
-                  >
+               {(prov, snap) => (
+  <NavItem
+    ref={prov.innerRef}
+    {...prov.draggableProps}
+    {...prov.dragHandleProps}
+    to={`/topic/${c.full_path}`}
+    $isDragging={snap.isDragging}
+    style={prov.draggableProps.style}
+  >
                     <NavItemContent>
                       <DragHandle>⋮⋮</DragHandle>
                       <NavItemText>{c.title}</NavItemText>
@@ -250,17 +276,14 @@ export default function TopicDetail() {
 
   {/* ✅ Admin Controls */}
   {isAdmin && (
-    <AdminBox>
-      <AdminButton onClick={handleAddSubtopic} $primary>
-        <span>+</span> Add Subtopic
-      </AdminButton>
-      {orderChanged && (
-        <AdminButton onClick={saveNewOrder} $save>
-          <span>💾</span> Save Order
-        </AdminButton>
-      )}
-    </AdminBox>
-  )}
+  <AdminBox>
+    <AdminButton onClick={handleAddSubtopic} $primary>
+      <span>+</span> Add Subtopic
+    </AdminButton>
+    
+  </AdminBox>
+)}
+
 </Sidebar>
 
 
@@ -274,38 +297,152 @@ export default function TopicDetail() {
           <HeaderDescription>{topic.description}</HeaderDescription>
 
           {/* Delete Root Topic (only admin) */}
-          {isAdmin && (
-            <DeleteRootBtn
-              onClick={() => handleDeleteTopic(topic.id, topic.title, true)}
-            >
-              🗑️ Delete Topic
-            </DeleteRootBtn>
-          )}
+          {/* --- Admin Controls: Delete, Add, and Update Content --- */}
+{isAdmin && (
+  <div style={{ display: "flex", gap: "12px", marginTop: "12px" }}>
+    {/* 🗑️ Delete Root Topic */}
+    <DeleteRootBtn
+      onClick={() => handleDeleteTopic(topic.id, topic.title, true)}
+    >
+      🗑️ Delete Topic
+    </DeleteRootBtn>
+
+    {/* 📝 Add Content Button */}
+    <AddContentBtn onClick={() => navigate(`/topic/${slug}/add-content`)}>
+      📝 Add Content
+    </AddContentBtn>
+
+    {/* ✏️ Update Content Button */}
+    <UpdateContentBtn onClick={() => navigate(`/topic/${slug}/update-content`)}>
+  ✏️ Update Content
+</UpdateContentBtn>
+
+
+    {/* 💾 Save Reorder (if applicable) */}
+    {orderChanged && (
+      <AdminButton onClick={saveNewOrder} $save>
+        <span>💾</span> Save Order
+      </AdminButton>
+    )}
+  </div>
+)}
+
+
         </HeaderSection>
 
-        <ContentBox>
-          {topic.blocks && topic.blocks.length > 0 ? (
-            topic.blocks.map((block) =>
-              block.components.map((comp, i) => (
-                <XMLPreview key={i}>
-                  <XMLHeader>
-                    <XMLTitle>Component {i + 1}</XMLTitle>
-                    <XMLBadge>XML</XMLBadge>
-                  </XMLHeader>
-                  <pre>{comp.xml?.substring(0, 400)}...</pre>
-                </XMLPreview>
-              ))
-            )
-          ) : (
-            <EmptyState>
-              <EmptyIcon>📚</EmptyIcon>
-              <EmptyTitle>No content available yet</EmptyTitle>
-              <EmptyDescription>
-                This topic is being prepared. Check back soon for updates!
-              </EmptyDescription>
-            </EmptyState>
-          )}
-        </ContentBox>
+      <ContentBox>
+  {topic?.blocks && topic.blocks.length > 0 ? (
+    topic.blocks.map((block, blockIndex) => (
+      <div key={block.id || blockIndex}>
+        {block.components && block.components.length > 0 ? (
+          block.components.map((comp, i) => {
+            const content = comp.content || {};
+
+            switch (comp.type) {
+              case "heading":
+                return <h2 key={i}>{content.text}</h2>;
+
+              case "paragraph":
+                return <p key={i}>{content.text}</p>;
+
+              case "example":
+                return (
+                  <div key={i}>
+                    <h4>💡 {content.title}</h4>
+                    <p>{content.content}</p>
+                  </div>
+                );
+
+              case "note":
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      borderLeft: "4px solid orange",
+                      padding: "10px",
+                      background: "rgba(255, 165, 0, 0.1)",
+                      marginBottom: "8px",
+                    }}
+                  >
+                    <strong>{content.title}</strong>
+                    <p>{content.content}</p>
+                  </div>
+                );
+
+              case "code":
+                return (
+                  <pre
+                    key={i}
+                    style={{
+                      background: "#0d1117",
+                      color: "#fff",
+                      padding: "12px",
+                      borderRadius: "8px",
+                      overflowX: "auto",
+                    }}
+                  >
+                    <code>{content.code}</code>
+                  </pre>
+                );
+
+              case "image":
+                return (
+                  <div key={i}>
+                    <img
+                      src={content.url}
+                      alt={content.alt || ""}
+                      style={{ maxWidth: "100%", borderRadius: "8px" }}
+                    />
+                    {content.caption && <p>{content.caption}</p>}
+                  </div>
+                );
+
+              case "carousel":
+                return (
+                  <div key={i}>
+                    <h4>🖼️ Carousel</h4>
+                    <div style={{ display: "flex", gap: "8px", overflowX: "auto" }}>
+                      {content.images?.map((img, j) => (
+                        <img
+                          key={j}
+                          src={img}
+                          alt={`slide-${j}`}
+                          style={{
+                            width: "150px",
+                            height: "auto",
+                            borderRadius: "8px",
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+
+              default:
+                return (
+                  <div key={i}>
+                    <p>⚠️ Unknown component type: {comp.type}</p>
+                    <pre>{JSON.stringify(comp.content, null, 2)}</pre>
+                  </div>
+                );
+            }
+          })
+        ) : (
+          <p>No components found in this block.</p>
+        )}
+      </div>
+    ))
+  ) : (
+    <EmptyState>
+      <EmptyIcon>📚</EmptyIcon>
+      <EmptyTitle>No content available yet</EmptyTitle>
+      <EmptyDescription>
+        This topic is being prepared. Check back soon for updates!
+      </EmptyDescription>
+    </EmptyState>
+  )}
+</ContentBox>
+
 
         <NavButtons>
           <NavButton onClick={() => navigate(-1)} $secondary>
@@ -904,5 +1041,144 @@ const DeleteRootBtn = styled.button`
 
   &:hover {
     background: rgba(239, 68, 68, 0.1);
+  }
+`;
+
+const AddContentBtn = styled.button`
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  border: none;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+  }
+
+  &:active {
+    transform: translateY(0);
+  }
+`;
+
+const HeadingComp = styled.h2`
+  font-weight: 800;
+  margin: 16px 0;
+  color: ${({ theme }) => theme.text};
+`;
+
+const ParagraphComp = styled.p`
+  font-size: 1.05rem;
+  line-height: 1.7;
+  margin: 8px 0 20px;
+  color: ${({ theme }) => theme.muted};
+`;
+
+const ExampleBox = styled.div`
+  background: rgba(16, 185, 129, 0.1);
+  border-left: 4px solid #10b981;
+  padding: 16px 20px;
+  border-radius: 12px;
+  margin: 16px 0;
+`;
+
+const ExampleTitle = styled.h4`
+  margin: 0 0 6px;
+  color: #10b981;
+`;
+
+const ExampleText = styled.p`
+  margin: 0;
+`;
+
+const NoteBox = styled.div`
+  background: ${({ $type }) =>
+    $type === "danger"
+      ? "rgba(239, 68, 68, 0.1)"
+      : $type === "warning"
+      ? "rgba(234, 179, 8, 0.1)"
+      : "rgba(59, 130, 246, 0.1)"};
+  border-left: 4px solid
+    ${({ $type }) =>
+      $type === "danger"
+        ? "#ef4444"
+        : $type === "warning"
+        ? "#eab308"
+        : "#3b82f6"};
+  padding: 16px 20px;
+  border-radius: 12px;
+  margin: 16px 0;
+`;
+
+const NoteTitle = styled.h4`
+  margin: 0 0 6px;
+`;
+
+const NoteText = styled.p`
+  margin: 0;
+`;
+
+const CodeBlock = styled.div`
+  background: ${({ theme }) =>
+    theme.name === "dark" ? "#1e1e2f" : "#f3f4f6"};
+  border-radius: 10px;
+  margin: 20px 0;
+  overflow-x: auto;
+  padding: 16px;
+  font-family: "Fira Code", monospace;
+
+  pre {
+    margin: 0;
+  }
+`;
+
+const CodeLang = styled.div`
+  font-size: 0.8rem;
+  color: #888;
+  margin-bottom: 8px;
+`;
+
+const ImageBox = styled.div`
+  text-align: center;
+  margin: 24px 0;
+`;
+
+const Caption = styled.div`
+  font-size: 0.85rem;
+  color: ${({ theme }) => theme.muted};
+  margin-top: 8px;
+`;
+
+const CarouselBox = styled.div`
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  margin: 20px 0;
+`;
+
+// ✅ Add below your existing styled-components section in TopicDetail.jsx
+
+const UpdateContentBtn = styled.button`
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  border: none;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+  }
+
+  &:active {
+    transform: translateY(0);
   }
 `;

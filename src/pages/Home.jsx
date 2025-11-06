@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { fetchRootTopics } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+import { DragDropContext, Droppable, Draggable } from "react-beautiful-dnd";
+
 
 export default function Home() {
   const [topics, setTopics] = useState([]);
@@ -17,6 +19,7 @@ export default function Home() {
   });
   const { auth } = useAuth();
   const [isAdmin, setIsAdmin] = useState(false);
+  const parentId = null; // root topics → null or parent topic id
 
   useEffect(() => {
     fetchRootTopics()
@@ -25,12 +28,10 @@ export default function Home() {
       .finally(() => setLoading(false));
   }, []);
 
-  // ✅ derive admin from context auth
   useEffect(() => {
     setIsAdmin(auth?.role === "admin" || auth?.user?.role === "admin");
   }, [auth]);
 
-  // Handle form change
   const handleChange = (e) => {
     const { name, value } = e.target;
     setForm((prev) => ({ ...prev, [name]: value }));
@@ -41,7 +42,6 @@ export default function Home() {
     }
   };
 
-  // Submit new topic
   async function handleSubmit(e) {
     e.preventDefault();
     setCreating(true);
@@ -93,6 +93,44 @@ export default function Home() {
       alert(`❌ ${err.message}`);
     }
   }
+
+ // 🧩 Handle drag and drop reorder
+const handleDragEnd = async (result) => {
+  if (!result.destination) return;
+
+  const newOrder = Array.from(topics);
+  const [movedItem] = newOrder.splice(result.source.index, 1);
+  newOrder.splice(result.destination.index, 0, movedItem);
+
+  // Update frontend order numbers
+  const updated = newOrder.map((t, index) => ({
+    ...t,
+    order_no: index,
+  }));
+
+  setTopics(updated);
+
+  try {
+    const res = await fetch(
+      `http://31.97.202.194/api/topics/${parentId || ""}reorder`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${auth?.token}`,
+        },
+        body: JSON.stringify(
+          updated.map((t) => ({ id: t.id, order_no: t.order_no }))
+        ),
+      }
+    );
+    if (!res.ok) throw new Error(`Reorder failed (${res.status})`);
+    console.log("✅ Reorder applied!");
+  } catch (err) {
+    alert(`❌ Error applying reorder: ${err.message}`);
+  }
+};
+
 
   return (
     <Wrapper>
@@ -149,42 +187,59 @@ export default function Home() {
               Start your learning journey with our most popular courses
             </SectionSubtitle>
           </div>
-          {isAdmin ? (
+          {isAdmin && (
             <AddButton onClick={() => setShowModal(true)}>+ Create Topic</AddButton>
-          ) : null}
+          )}
         </HeaderRow>
 
         {loading ? (
           <LoadingText>Loading topics...</LoadingText>
         ) : (
-          <TopicGrid>
-            {topics.map((topic) => (
-              <TopicCard
-                key={topic.id}
-                to={`/topic/${topic.slug}`}
-                title={`Open ${topic.title}`}
-              >
-                <TopicContent>
-                  <h4>{topic.title}</h4>
-                  <p>{topic.description || "No description available."}</p>
-                </TopicContent>
+          <DragDropContext onDragEnd={handleDragEnd}>
+            <Droppable droppableId="topics">
+              {(provided) => (
+                <TopicGrid ref={provided.innerRef} {...provided.droppableProps}>
+                  {topics.map((topic, index) => (
+                    <Draggable
+                      key={topic.id}
+                      draggableId={topic.id.toString()}
+                      index={index}
+                      isDragDisabled={!isAdmin}
+                    >
+                      {(dragProvided) => (
+                        <TopicCard
+                          ref={dragProvided.innerRef}
+                          {...dragProvided.draggableProps}
+                          {...dragProvided.dragHandleProps}
+                          to={`/topic/${topic.slug}`}
+                          title={`Open ${topic.title}`}
+                        >
+                          <TopicContent>
+                            <h4>{topic.title}</h4>
+                            <p>{topic.description || "No description available."}</p>
+                          </TopicContent>
 
-                {/* ✅ Show Delete button only for Admin */}
-                {isAdmin && (
-                  <DeleteBtn
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      handleDeleteTopic(topic.id, topic.title);
-                    }}
-                    title="Delete topic"
-                  >
-                    🗑️
-                  </DeleteBtn>
-                )}
-              </TopicCard>
-            ))}
-          </TopicGrid>
+                          {isAdmin && (
+                            <DeleteBtn
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                handleDeleteTopic(topic.id, topic.title);
+                              }}
+                              title="Delete topic"
+                            >
+                              🗑️
+                            </DeleteBtn>
+                          )}
+                        </TopicCard>
+                      )}
+                    </Draggable>
+                  ))}
+                  {provided.placeholder}
+                </TopicGrid>
+              )}
+            </Droppable>
+          </DragDropContext>
         )}
       </TopicsSection>
 
